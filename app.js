@@ -96,30 +96,19 @@ async function downloadRecording(callId) {
   }
 }
 
-// Функция для отправки аудио в Telegram
-async function sendAudioToTelegram(filePath, callId, caption) {
+// Функция для форматирования даты (только дата без времени)
+function formatDate(dateString) {
+  if (!dateString) return "Дата не указана";
+  
   try {
-    const formData = new FormData();
-    formData.append('chat_id', TG_CHAT_ID);
-    formData.append('audio', fs.createReadStream(filePath));
-    formData.append('caption', caption);
-    formData.append('parse_mode', 'HTML');
-
-    const response = await axios.post(
-      `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendAudio`,
-      formData,
-      {
-        headers: formData.getHeaders(),
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity
-      }
-    );
-
-    console.log("Аудио отправлено в Telegram");
-    return true;
+    const date = new Date(dateString);
+    return date.toLocaleDateString('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    });
   } catch (error) {
-    console.error("Ошибка при отправке аудио:", error.message);
-    return false;
+    return "Дата не указана";
   }
 }
 
@@ -131,11 +120,13 @@ app.post("/webhook", async (req, res) => {
     const resultName = req.body?.call_result?.result_name;
     const callDuration = req.body?.call?.duration || 0;
     const callId = req.body?.call?.id;
+    const callStartedAt = req.body?.call?.started_at;
 
     console.log("--- АНАЛИЗ СТРУКТУРЫ ---");
     console.log("Название результата:", resultName);
     console.log("Длительность звонка:", callDuration, "сек");
     console.log("ID звонка:", callId);
+    console.log("Дата звонка:", callStartedAt);
 
     const isSuccessfulCall =
       resultName &&
@@ -144,48 +135,53 @@ app.post("/webhook", async (req, res) => {
       );
 
     if (isSuccessfulCall && callId) {
-      console.log("ОБНАРУЖЕН УСПЕШНЫЙ ЗВОНОК!");
+      console.log("ОБНАРУЖЕН ПОТЕНЦИАЛЬНЫЙ КЛИЕНТ!");
 
       const managerName = req.body?.call?.user?.name || "Менеджер не указан";
-      const clientName = req.body?.lead?.name || req.body?.contact?.name || "Клиент не указан";
-      const organizationName = req.body?.lead?.name || "Организация не указана";
       const phone = req.body?.call?.phone || "Телефон не указан";
       const comment = req.body?.call_result?.comment || "нет комментария";
+      
+      // Форматируем дату (только дата без времени)
+      const formattedDate = formatDate(callStartedAt);
 
-      // Сначала отправляем текстовое сообщение
-      const message = `✅ УСПЕШНЫЙ ЗВОНОК
+      // Форматируем сообщение для подписи к аудио
+      const message = `🎧 [Аудиозапись]
+✅ ПОТЕНЦИАЛЬНЫЙ КЛИЕНТ 
 
 👤 Менеджер: ${managerName}
-👥 Клиент: ${clientName}
-🏢 Организация: ${organizationName}
 📞 Телефон: ${phone}
 🎯 Результат: ${resultName}
-⏱️ Длительность: ${callDuration} сек
 💬 Комментарий: ${comment}
 
+Дата: ${formattedDate}
 ID звонка: ${callId}`;
-
-      console.log("📨 Отправляю текстовое сообщение в Telegram...");
-      await axios.post(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
-        chat_id: TG_CHAT_ID,
-        text: message,
-        parse_mode: "HTML"
-      });
 
       // Ждем 2 минуты для появления записи
       console.log("Жду 2 минуты, чтобы запись успела появиться...");
       await new Promise((resolve) => setTimeout(resolve, 120000));
 
-      // Пытаемся скачать и отправить аудио
+      // Пытаемся скачать и отправить аудио С ТЕКСТОМ В ПОДПИСИ
       const audioFilePath = await downloadRecording(callId);
       
       if (audioFilePath) {
-        const audioCaption = `🎧 Запись успешного звонка\nID: ${callId}`;
-        const audioSent = await sendAudioToTelegram(audioFilePath, callId, audioCaption);
-        
-        if (audioSent) {
-          console.log("Аудио успешно отправлено");
-        }
+        // Отправляем ОДНО сообщение с аудио и текстом
+        const formData = new FormData();
+        formData.append('chat_id', TG_CHAT_ID);
+        formData.append('audio', fs.createReadStream(audioFilePath));
+        formData.append('caption', message); // Текст идет как подпись к аудио
+        formData.append('parse_mode', 'HTML');
+
+        await axios.post(
+          `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendAudio`,
+          formData,
+          {
+            headers: formData.getHeaders(),
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity
+          }
+        );
+
+        console.log("Аудио с текстом отправлено в Telegram в одном сообщении");
         
         // Удаляем временный файл
         try {
@@ -195,12 +191,11 @@ ID звонка: ${callId}`;
           console.error("Ошибка при удалении файла:", err.message);
         }
       } else {
-        console.log("Не удалось скачать запись звонка");
-        
-        // Отправляем сообщение о том, что запись недоступна
+        // Если не удалось скачать аудио, отправляем только текст
+        console.log("Не удалось скачать аудио, отправляю только текст");
         await axios.post(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
           chat_id: TG_CHAT_ID,
-          text: `❌ Не удалось получить запись звонка ${callId}`,
+          text: message + "\n\n❌ Запись разговора недоступна",
           parse_mode: "HTML"
         });
       }
@@ -222,5 +217,5 @@ ID звонка: ${callId}`;
 app.listen(PORT, () => {
   console.log(`Сервер запущен на порту ${PORT}`);
   console.log(`Вебхук для Skorozvon: http://localhost:${PORT}/webhook`);
-  console.log(`Ожидаю успешные звонки: ${SUCCESSFUL_RESULT_NAMES.join(", ")}`);
+  console.log(`Ожидаю звонки с результатами: ${SUCCESSFUL_RESULT_NAMES.join(", ")}`);
 });
