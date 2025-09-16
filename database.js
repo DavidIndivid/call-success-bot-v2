@@ -12,7 +12,7 @@ const db = new sqlite3.Database(dbPath, err => {
 });
 
 function initTables() {
-  // Таблица привязок сценарий → чат
+  // Таблица привязки сценариев к чатам
   db.run(`
     CREATE TABLE IF NOT EXISTS scenario_mappings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,22 +40,13 @@ function initTables() {
     )
   `);
 
-  // Таблица админов
+  // Таблица админов (кроме главных из MAIN_ADMINS)
   db.run(`
     CREATE TABLE IF NOT EXISTS bot_admins (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       telegram_id TEXT NOT NULL UNIQUE,
       name TEXT,
-      role TEXT DEFAULT 'normal',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  // Таблица известных пользователей для назначения админов
-  db.run(`
-    CREATE TABLE IF NOT EXISTS known_users (
-      telegram_id TEXT PRIMARY KEY,
-      name TEXT,
+      role TEXT DEFAULT 'normal', -- normal для обычных админов
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
