@@ -12,7 +12,6 @@ app.use(express.json());
 /* ====== Настройки ====== */
 const PORT = process.env.PORT || 3000;
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
-const DEFAULT_TG_CHAT_ID = process.env.DEFAULT_TG_CHAT_ID;
 const SUCCESSFUL_RESULT_NAMES = process.env.SUCCESSFUL_RESULT_NAMES
   ? process.env.SUCCESSFUL_RESULT_NAMES.split(",")
   : ["Успех", "Горячий", "Горячая", "Hot"];
@@ -59,17 +58,29 @@ async function initDb() {
     group_name TEXT,
     UNIQUE(chat_id, group_id)
   )`);
+  await dbRun(`CREATE TABLE IF NOT EXISTS unsent_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    call_id TEXT,
+    group_id TEXT,
+    group_name TEXT,
+    manager_name TEXT,
+    phone TEXT,
+    result_name TEXT,
+    comment TEXT,
+    started_at TEXT,
+    created_at INTEGER
+  )`);
 }
 initDb().catch(console.error);
 
-/* ====== Телеграм бот (Telegraf) ====== */
+/* ====== Телеграм бот (Telegraf, webhook-режим) ====== */
 const bot = new Telegraf(TG_BOT_TOKEN);
 
 async function isUserAdmin(chatId, userId) {
   try {
     const member = await bot.telegram.getChatMember(chatId, userId);
     return ["creator", "administrator"].includes(member.status);
-  } catch (e) {
+  } catch {
     return false;
   }
 }
@@ -91,10 +102,7 @@ async function getAccessToken() {
     });
     return resp.data.access_token;
   } catch (err) {
-    console.error(
-      "Ошибка токена Skorozvon:",
-      err.response?.data || err.message
-    );
+    console.error("Ошибка токена Skorozvon:", err.response?.data || err.message);
     return null;
   }
 }
@@ -128,15 +136,11 @@ async function refreshScenariosCache() {
 
 async function getGroupForScenario(scenarioId) {
   if (!scenarioId) return null;
-  let row = await dbGet("SELECT * FROM scenarios WHERE scenario_id = ?", [
-    String(scenarioId),
-  ]);
+  let row = await dbGet("SELECT * FROM scenarios WHERE scenario_id = ?", [String(scenarioId)]);
   if (row) return { group_id: row.group_id, group_name: row.group_name };
 
   await refreshScenariosCache();
-  row = await dbGet("SELECT * FROM scenarios WHERE scenario_id = ?", [
-    String(scenarioId),
-  ]);
+  row = await dbGet("SELECT * FROM scenarios WHERE scenario_id = ?", [String(scenarioId)]);
   if (row) return { group_id: row.group_id, group_name: row.group_name };
   return null;
 }
@@ -149,107 +153,88 @@ async function addSubscription(chatId, groupId, groupName) {
   );
 }
 async function removeSubscription(chatId, groupId) {
-  await dbRun(`DELETE FROM subscriptions WHERE chat_id = ? AND group_id = ?`, [
-    String(chatId),
-    String(groupId),
-  ]);
+  await dbRun(`DELETE FROM subscriptions WHERE chat_id = ? AND group_id = ?`, [String(chatId), String(groupId)]);
 }
 async function listSubscriptions(chatId) {
-  return await dbAll(`SELECT * FROM subscriptions WHERE chat_id = ?`, [
-    String(chatId),
-  ]);
+  return await dbAll(`SELECT * FROM subscriptions WHERE chat_id = ?`, [String(chatId)]);
 }
 async function getChatsForGroup(groupId) {
-  return await dbAll(
-    `SELECT DISTINCT chat_id FROM subscriptions WHERE group_id = ?`,
-    [String(groupId)]
-  );
+  return await dbAll(`SELECT DISTINCT chat_id FROM subscriptions WHERE group_id = ?`, [String(groupId)]);
 }
 
 /* ====== Команды бота ====== */
-// /обновить_сценарии
 bot.command("обновить_сценарии", async (ctx) => {
   const chatId = ctx.chat.id;
   const userId = ctx.from.id;
-  const ok =
-    ctx.chat.type === "private" ? true : await isUserAdmin(chatId, userId);
-  if (!ok)
-    return ctx.reply("❌ Только администраторы могут обновлять сценарии.");
+  const ok = ctx.chat.type === "private" ? true : await isUserAdmin(chatId, userId);
+  if (!ok) return ctx.reply("❌ Только администраторы могут обновлять сценарии.");
 
   await ctx.reply("⏳ Обновляю список сценариев...");
   await refreshScenariosCache();
   await ctx.reply("✅ Сценарии обновлены.");
 });
 
-// /привязать
 bot.command("привязать", async (ctx) => {
   const chatId = ctx.chat.id;
   const userId = ctx.from.id;
-  const ok =
-    ctx.chat.type === "private" ? true : await isUserAdmin(chatId, userId);
-  if (!ok)
-    return ctx.reply("❌ Только администраторы могут управлять подписками.");
+  const ok = ctx.chat.type === "private" ? true : await isUserAdmin(chatId, userId);
+  if (!ok) return ctx.reply("❌ Только администраторы могут управлять подписками.");
 
-  const groups = await dbAll(
-    `SELECT DISTINCT group_id, group_name FROM scenarios`
-  );
+  const groups = await dbAll(`SELECT DISTINCT group_id, group_name FROM scenarios`);
   if (!groups || groups.length === 0) {
-    return ctx.reply(
-      "⚠️ Сценарии ещё не загружены. Сначала выполните /обновить_сценарии"
-    );
+    return ctx.reply("⚠️ Сценарии ещё не загружены. Сначала выполните /обновить_сценарии");
   }
 
   const buttons = groups.map((g) =>
-    Markup.button.callback(
-      `📌 ${g.group_name || g.group_id}`,
-      `bind:${g.group_id}:${g.group_name || ""}`
-    )
+    Markup.button.callback(`📌 ${g.group_name || g.group_id}`, `bind:${g.group_id}:${g.group_name || ""}`)
   );
   const keyboard = [];
-  for (let i = 0; i < buttons.length; i += 2)
-    keyboard.push(buttons.slice(i, i + 2));
+  for (let i = 0; i < buttons.length; i += 2) keyboard.push(buttons.slice(i, i + 2));
 
-  await ctx.reply(
-    "Выберите группу сценариев для привязки:",
-    Markup.inlineKeyboard(keyboard)
-  );
+  await ctx.reply("Выберите группу сценариев для привязки:", Markup.inlineKeyboard(keyboard));
 });
 
-// /подписки
 bot.command("подписки", async (ctx) => {
   const chatId = ctx.chat.id;
   const rows = await listSubscriptions(chatId);
-  if (!rows || rows.length === 0)
-    return ctx.reply("📭 У этого чата пока нет подписок.");
+  if (!rows || rows.length === 0) return ctx.reply("📭 У этого чата пока нет подписок.");
 
   let text = "📌 Подписки этого чата:\n\n";
-
   const buttons = rows.map((r) =>
-    Markup.button.callback(
-      `❌ ${r.group_name || r.group_id}`,
-      `unbind:${r.group_id}`
-    )
+    Markup.button.callback(`❌ ${r.group_name || r.group_id}`, `unbind:${r.group_id}`)
   );
-
-  // каждую кнопку в отдельную строку
   const keyboard = buttons.map((b) => [b]);
-
   rows.forEach((r) => (text += `• ${r.group_name || r.group_id}\n`));
 
   return ctx.reply(text, Markup.inlineKeyboard(keyboard));
 });
 
-// Обработчик кнопок
+bot.command("показать_ожидание", async (ctx) => {
+  const chatId = ctx.chat.id;
+  const subs = await listSubscriptions(chatId);
+  if (!subs.length) return ctx.reply("❌ У этого чата нет подписок.");
+
+  for (const s of subs) {
+    const rows = await dbAll(`SELECT * FROM unsent_calls WHERE group_id = ? LIMIT 10`, [s.group_id]);
+    if (rows.length) {
+      for (const r of rows) {
+        await ctx.reply(
+          `📞 Отложенный звонок\n\nМенеджер: ${r.manager_name}\nТелефон: ${r.phone}\nРезультат: ${r.result_name}\nКомментарий: ${r.comment}\nДата: ${r.started_at}`
+        );
+      }
+      await dbRun(`DELETE FROM unsent_calls WHERE group_id = ?`, [s.group_id]);
+    }
+  }
+});
+
+/* ====== Callback кнопки ====== */
 bot.on("callback_query", async (ctx) => {
   const data = ctx.callbackQuery.data;
   const chatId = ctx.chat?.id || ctx.callbackQuery?.message?.chat?.id;
   const userId = ctx.from.id;
-
   const isAdmin = await isUserAdmin(chatId, userId);
   if (!isAdmin) {
-    await ctx.answerCbQuery(
-      "❌ Только администраторы могут управлять подписками."
-    );
+    await ctx.answerCbQuery("❌ Только администраторы могут управлять подписками.");
     return;
   }
 
@@ -258,9 +243,7 @@ bot.on("callback_query", async (ctx) => {
     const groupId = parts[1];
     const groupName = parts.slice(2).join(":") || null;
     await addSubscription(chatId, groupId, groupName);
-    await ctx.editMessageText(
-      `✅ Чат подписан на группу «${groupName || groupId}»`
-    );
+    await ctx.editMessageText(`✅ Чат подписан на группу «${groupName || groupId}»`);
     await ctx.answerCbQuery("Подписка сохранена");
   }
 
@@ -280,10 +263,7 @@ async function sendAudioToChat(callId, caption, chatId) {
     if (!token) throw new Error("нет токена");
 
     const recordingUrl = `https://api.skorozvon.ru/api/v2/calls/${callId}.mp3?access_token=${token}`;
-    const audioResp = await axios.get(recordingUrl, {
-      responseType: "stream",
-      timeout: 30000,
-    });
+    const audioResp = await axios.get(recordingUrl, { responseType: "stream", timeout: 30000 });
 
     const form = new FormData();
     form.append("chat_id", chatId);
@@ -291,45 +271,37 @@ async function sendAudioToChat(callId, caption, chatId) {
     form.append("caption", caption);
     form.append("parse_mode", "HTML");
 
-    await axios.post(
-      `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendAudio`,
-      form,
-      {
-        headers: form.getHeaders(),
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity,
-      }
-    );
+    await axios.post(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendAudio`, form, {
+      headers: form.getHeaders(),
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+    });
     return true;
   } catch (e) {
-    console.error(
-      `Ошибка отправки аудио в чат ${chatId}:`,
-      e.response?.data || e.message
-    );
+    console.error(`Ошибка отправки аудио в чат ${chatId}:`, e.response?.data || e.message);
     return false;
   }
 }
 
 /* ====== Webhook Skorozvon ====== */
 app.post("/webhook", async (req, res) => {
+  console.log("=== ВЕБХУК ПОЛУЧЕН ===", new Date().toISOString());
+  console.log("BODY:", JSON.stringify(req.body, null, 2));
+
   const call = req.body?.call || {};
   const callId = call.id;
   const resultName = req.body?.call_result?.result_name;
 
   const isSuccessful =
     resultName &&
-    SUCCESSFUL_RESULT_NAMES.some((s) =>
-      resultName.toLowerCase().includes(s.toLowerCase())
-    );
+    SUCCESSFUL_RESULT_NAMES.some((s) => resultName.toLowerCase().includes(s.toLowerCase()));
   if (!isSuccessful) return res.sendStatus(200);
 
   const managerName = call.user?.name || "Не указан";
   const phone = call.phone || "Не указан";
   const comment = req.body?.call_result?.comment || "нет комментария";
   const startedAt = call.started_at || null;
-  const formattedDate = startedAt
-    ? new Date(startedAt).toLocaleString("ru-RU")
-    : new Date().toLocaleString("ru-RU");
+  const formattedDate = startedAt ? new Date(startedAt).toLocaleString("ru-RU") : new Date().toLocaleString("ru-RU");
 
   const caption = `✅ ПОТЕНЦИАЛЬНЫЙ КЛИЕНТ
 
@@ -350,21 +322,35 @@ ID звонка: ${callId}`;
     const rows = await getChatsForGroup(groupId);
     targetChats = rows.map((r) => r.chat_id);
   }
-  if (targetChats.length === 0 && DEFAULT_TG_CHAT_ID) {
-    targetChats = [DEFAULT_TG_CHAT_ID];
+
+  if (targetChats.length === 0) {
+    console.log(`❌ Нет подписанных чатов для группы ${groupId}. Сохраняю звонок ${callId}`);
+    await dbRun(
+      `INSERT INTO unsent_calls(call_id, group_id, group_name, manager_name, phone, result_name, comment, started_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        callId,
+        groupId || null,
+        groupInfo?.group_name || null,
+        managerName,
+        phone,
+        resultName,
+        comment,
+        startedAt,
+        Math.floor(Date.now() / 1000),
+      ]
+    );
+    return res.sendStatus(200);
   }
 
   for (const chatId of targetChats) {
     const ok = await sendAudioToChat(callId, caption, chatId);
     if (!ok) {
-      await axios.post(
-        `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`,
-        {
-          chat_id: chatId,
-          text: caption + "\n\n❌ Запись недоступна",
-          parse_mode: "HTML",
-        }
-      );
+      await axios.post(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
+        chat_id: chatId,
+        text: caption + "\n\n❌ Запись недоступна",
+        parse_mode: "HTML",
+      });
     }
   }
 
@@ -372,5 +358,7 @@ ID звонка: ${callId}`;
 });
 
 /* ====== Запуск ====== */
-bot.launch().then(() => console.log("🤖 Бот запущен"));
+app.use(bot.webhookCallback(`/bot${TG_BOT_TOKEN}`));
+bot.telegram.setWebhook(`${process.env.RAILWAY_PUBLIC_URL}/bot${TG_BOT_TOKEN}`);
+
 app.listen(PORT, () => console.log(`🌐 Сервер слушает порт ${PORT}`));
