@@ -47,7 +47,7 @@ async function sendAudioToTelegram(callId, caption) {
     const accessToken = await getAccessToken();
     if (!accessToken) return false;
 
-    const recordingUrl = https://api.skorozvon.ru/api/v2/calls/${callId}.mp3?access_token=${accessToken};
+    const recordingUrl = `https://api.skorozvon.ru/api/v2/calls/${callId}.mp3?access_token=${accessToken}`;
 
     const audioResponse = await axios({
       method: "GET",
@@ -63,7 +63,7 @@ async function sendAudioToTelegram(callId, caption) {
     formData.append("parse_mode", "HTML");
 
     await axios.post(
-      https://api.telegram.org/bot${TG_BOT_TOKEN}/sendAudio,
+      `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendAudio`,
       formData,
       {
         headers: formData.getHeaders(),
@@ -137,7 +137,7 @@ ID звонка: ${callId}`;
 
     if (!audioSent) {
       await axios.post(
-        https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage,
+        `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`,
         {
           chat_id: TG_CHAT_ID,
           text: message + "\n\n❌ Запись недоступна",
@@ -151,6 +151,6 @@ ID звонка: ${callId}`;
 });
 
 app.listen(PORT, () => {
-  console.log(Server running on port ${PORT});
-  console.log(Webhook: http://localhost:${PORT}/webhook);
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Webhook: http://localhost:${PORT}/webhook`);
 });
