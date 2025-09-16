@@ -1,131 +1,156 @@
-// debug-server.js — временная debug-версия, заменяет server.js на время отладки
 require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const FormData = require("form-data");
-const sqlite3 = require("sqlite3").verbose();
-const { Telegraf, Markup } = require("telegraf");
 
 const app = express();
-
-// Парсинг JSON
-app.use(express.json({ limit: "1mb" }));
-
-/* ====== Настройки ====== */
 const PORT = process.env.PORT || 3000;
-const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
-const RAILWAY_PUBLIC_URL = process.env.RAILWAY_PUBLIC_URL || "";
+
 const SUCCESSFUL_RESULT_NAMES = process.env.SUCCESSFUL_RESULT_NAMES
   ? process.env.SUCCESSFUL_RESULT_NAMES.split(",")
-  : ["Успех", "Горячий", "Горячая", "Hot"];
+  : ["Горячий", "Горячая", "Hot", "Успех"];
 
-if (!TG_BOT_TOKEN) {
-  console.error("ERROR: TG_BOT_TOKEN is not set in .env");
-  process.exit(1);
-}
-if (!RAILWAY_PUBLIC_URL) {
-  console.warn("WARN: RAILWAY_PUBLIC_URL not set — set it to your public url if you want automatic webhook setup.");
-}
+const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
+const TG_CHAT_ID = process.env.TG_CHAT_ID;
 
-/* ====== DB (SQLite) - инициализация минимальная (как у тебя) ====== */
-const db = new sqlite3.Database("./data.sqlite");
-// (инициализация таблиц пропущена здесь, предполагается, что они уже созданы или используем твою версию)
+app.use(express.json());
 
-/* ====== Telegraf (webhook mode) ====== */
-const bot = new Telegraf(TG_BOT_TOKEN);
+const processedCallIds = new Set();
 
-// Логируем ВСЕ входящие HTTP-запросы (полезно)
-app.use((req, res, next) => {
-  console.log(`[HTTP] ${req.method} ${req.originalUrl}`);
-  next();
+app.get("/", (req, res) => {
+  res.send("CallSuccess AI Processor is running");
 });
 
-// Логгер только для webhook пути (парсит тело уже express.json сделал)
-app.post(`/bot${TG_BOT_TOKEN}`, (req, res, next) => {
-  console.log("=== ВХОДЯЩИЙ UPDATE от Telegram ===");
-  console.log(JSON.stringify(req.body, null, 2));
-  // пропускаем дальше к telegraf
-  next();
-});
-
-// Подключаем telegraf webhook callback на тот же путь
-app.use(bot.webhookCallback(`/bot${TG_BOT_TOKEN}`));
-
-// Доп. эндпойнт — возвращает getWebhookInfo от Telegram (для быстрой диагностики)
-app.get("/tg/getWebhookInfo", async (req, res) => {
+async function getAccessToken() {
   try {
-    const info = await axios.get(`https://api.telegram.org/bot${TG_BOT_TOKEN}/getWebhookInfo`);
-    return res.json(info.data);
-  } catch (e) {
-    return res.status(500).json({ error: e.message, detail: e.response?.data });
+    const response = await axios({
+      method: "post",
+      url: "https://api.skorozvon.ru/oauth/token",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      data: new URLSearchParams({
+        grant_type: "password",
+        username: process.env.SKOROZVON_USERNAME,
+        api_key: process.env.SKOROZVON_API_KEY,
+        client_id: process.env.SKOROZVON_CLIENT_ID,
+        client_secret: process.env.SKOROZVON_CLIENT_SECRET,
+      }),
+    });
+    return response.data.access_token;
+  } catch (error) {
+    console.error("Token error:", error.response?.data || error.message);
+    return null;
   }
-});
+}
 
-// Тестовый эндпойнт: отправляет симулированный update на webhook (локально тест)
-app.post("/tg/simulate", async (req, res) => {
-  // Тело можно передать JSON для message; по умолчанию отправит команду /обновить_сценарии
-  const payload = req.body.payload || {
-    update_id: Date.now(),
-    message: {
-      message_id: 1,
-      from: { id: 123456789, is_bot: false, first_name: "Debug" },
-      chat: { id: 123456789, type: "private", first_name: "Debug" },
-      date: Math.floor(Date.now() / 1000),
-      text: "/обновить_сценарии"
-    }
-  };
+async function sendAudioToTelegram(callId, caption) {
+  try {
+    const accessToken = await getAccessToken();
+    if (!accessToken) return false;
+
+    const recordingUrl = https://api.skorozvon.ru/api/v2/calls/${callId}.mp3?access_token=${accessToken};
+
+    const audioResponse = await axios({
+      method: "GET",
+      url: recordingUrl,
+      responseType: "stream",
+      timeout: 30000,
+    });
+
+    const formData = new FormData();
+    formData.append("chat_id", TG_CHAT_ID);
+    formData.append("audio", audioResponse.data);
+    formData.append("caption", caption);
+    formData.append("parse_mode", "HTML");
+
+    await axios.post(
+      https://api.telegram.org/bot${TG_BOT_TOKEN}/sendAudio,
+      formData,
+      {
+        headers: formData.getHeaders(),
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+      }
+    );
+
+    return true;
+  } catch (error) {
+    console.error("Audio send error:", error.message);
+    return false;
+  }
+}
+
+function formatDate(dateString) {
+  if (!dateString) return new Date().toLocaleDateString("ru-RU");
 
   try {
-    const webhookUrl = `${RAILWAY_PUBLIC_URL}/bot${TG_BOT_TOKEN}`;
-    const r = await axios.post(webhookUrl, payload, { headers: { "Content-Type": "application/json" } });
-    return res.json({ ok: true, status: r.status });
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: e.message, detail: e.response?.data });
+    const date = new Date(dateString);
+    return date.toLocaleDateString("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
+  } catch (error) {
+    return new Date().toLocaleDateString("ru-RU");
   }
-});
+}
 
-/* ====== Команды (минимальные, для проверки) ====== */
-bot.command("обновить_сценарии", async (ctx) => {
-  console.log("COMMAND /обновить_сценарии received from", ctx.from.id, "chat", ctx.chat.id);
-  await ctx.reply("Понял, обновляю сценарии (debug)..."); // тут можно вызвать refreshScenariosCache
-});
+app.post("/webhook", async (req, res) => {
+  const callId = req.body?.call?.id;
+  const resultName = req.body?.call_result?.result_name;
 
-bot.command("привязать", async (ctx) => {
-  console.log("COMMAND /привязать", ctx.from.id, ctx.chat.id);
-  await ctx.reply("Показываю список групп (debug) ...");
-});
+  if (processedCallIds.has(callId)) {
+    console.log("Duplicate webhook skipped:", callId);
+    return res.sendStatus(200);
+  }
+  processedCallIds.add(callId);
 
-bot.command("подписки", async (ctx) => {
-  console.log("COMMAND /подписки", ctx.from.id, ctx.chat.id);
-  await ctx.reply("Показываю подписки (debug) ...");
-});
+  setTimeout(() => processedCallIds.delete(callId), 24 * 60 * 60 * 1000);
 
-/* ====== Запуск сервера и регистрация вебхука ====== */
-app.listen(PORT, async () => {
-  console.log(`🌐 Debug server listening on port ${PORT}`);
+  const isSuccessfulCall =
+    resultName &&
+    SUCCESSFUL_RESULT_NAMES.some((name) =>
+      resultName.toLowerCase().includes(name.toLowerCase())
+    );
 
-  // Попытаемся зарегистрировать webhook если RAILWAY_PUBLIC_URL задан
-  if (RAILWAY_PUBLIC_URL) {
-    const webhookUrl = `${RAILWAY_PUBLIC_URL}/bot${TG_BOT_TOKEN}`;
-    try {
-      const resp = await axios.post(`https://api.telegram.org/bot${TG_BOT_TOKEN}/setWebhook`, null, {
-        params: { url: webhookUrl }
-      });
-      console.log("setWebhook response:", resp.data);
-    } catch (e) {
-      console.error("setWebhook error:", e.response?.data || e.message);
+  if (isSuccessfulCall && callId) {
+    const managerName = req.body?.call?.user?.name || "Не указан";
+    const phone = req.body?.call?.phone || "Не указан";
+    const comment = req.body?.call_result?.comment || "нет комментария";
+    const callStartedAt = req.body?.call?.started_at;
+
+    const formattedDate = formatDate(callStartedAt);
+
+    const message = `
+    ✅ ПОТЕНЦИАЛЬНЫЙ КЛИЕНТ 
+
+👤 Менеджер: ${managerName}
+📞 Телефон: ${phone}
+🎯 Результат: ${resultName}
+💬 Комментарий: ${comment}
+
+Дата: ${formattedDate}
+ID звонка: ${callId}`;
+
+    await new Promise((resolve) => setTimeout(resolve, 120000));
+
+    const audioSent = await sendAudioToTelegram(callId, message);
+
+    if (!audioSent) {
+      await axios.post(
+        https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage,
+        {
+          chat_id: TG_CHAT_ID,
+          text: message + "\n\n❌ Запись недоступна",
+          parse_mode: "HTML",
+        }
+      );
     }
-  } else {
-    console.log("RAILWAY_PUBLIC_URL not set — skip setWebhook");
   }
 
-  console.log("Теперь: отправь боту в личке /обновить_сценарии и смотри логи Railway.");
+  res.sendStatus(200);
 });
 
-// глобальная обработка ошибок
-process.on("unhandledRejection", (err) => {
-  console.error("UnhandledRejection:", err);
-});
-process.on("uncaughtException", (err) => {
-  console.error("UncaughtException:", err);
+app.listen(PORT, () => {
+  console.log(Server running on port ${PORT});
+  console.log(Webhook: http://localhost:${PORT}/webhook);
 });
