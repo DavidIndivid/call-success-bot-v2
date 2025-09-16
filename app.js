@@ -51,11 +51,19 @@ function isUserAdmin(telegramUserId) {
 function addAdmin(userId, username) {
   return new Promise((resolve, reject) => {
     db.run(
-      `INSERT OR IGNORE INTO admin_users (telegram_user_id, username) VALUES (?, ?)`,
+      `INSERT OR REPLACE INTO admin_users (telegram_user_id, username) VALUES (?, ?)`,
       [userId, username],
       function(err) {
-        if (err) reject(err);
-        resolve({ id: this.lastID, changes: this.changes });
+        if (err) {
+          reject(err);
+          return;
+        }
+        // Проверяем, была ли произведена вставка или обновление
+        resolve({ 
+          id: this.lastID, 
+          changes: this.changes,
+          message: this.changes > 0 ? 'added' : 'already_exists'
+        });
       }
     );
   });
@@ -562,8 +570,12 @@ bot.command('add_admin', async (ctx) => {
   }
 
   try {
-    await addAdmin(parseInt(userId), 'unknown');
-    ctx.reply(`✅ Пользователь с ID ${userId} добавлен в администраторы.`);
+    const result = await addAdmin(parseInt(userId), 'unknown');
+    if (result.message === 'added') {
+      ctx.reply(`✅ Пользователь с ID ${userId} добавлен в администраторы.`);
+    } else {
+      ctx.reply(`ℹ️ Пользователь с ID ${userId} уже является администратором.`);
+    }
   } catch (error) {
     console.error('Add admin error:', error);
     ctx.reply('❌ Ошибка при добавлении администратора.');
@@ -583,15 +595,40 @@ bot.command('myid', (ctx) => {
   );
 });
 
+bot.command('debug_admins', async (ctx) => {
+  if (ctx.from.id.toString() !== MAIN_ADMIN_ID) {
+    return ctx.reply('❌ Только главный администратор может использовать эту команду.');
+  }
+
+  try {
+    const admins = await listAdmins();
+    console.log('Debug - Admins in database:', admins);
+    
+    const message = admins.map(admin => 
+      `ID: ${admin.telegram_user_id}, Username: ${admin.username}, Created: ${admin.created_at}`
+    ).join('\n');
+    
+    ctx.reply(`Администраторы в базе:\n\n${message || 'Нет администраторов'}`);
+  } catch (error) {
+    console.error('Debug error:', error);
+    ctx.reply('❌ Ошибка при получении данных.');
+  }
+});
+
 bot.on('message', async (ctx) => {
   await updateAvailableChats(ctx);
   
   if (ctx.session && ctx.session.waitingForAdmin === 'forward' && ctx.message.forward_from) {
     const user = ctx.message.forward_from;
     try {
-      await addAdmin(user.id, user.username || 'unknown');
+      const result = await addAdmin(user.id, user.username || 'unknown');
       delete ctx.session.waitingForAdmin;
-      ctx.reply(`✅ Пользователь @${user.username || user.id} (ID: ${user.id}) добавлен в администраторы.`);
+      
+      if (result.message === 'added') {
+        ctx.reply(`✅ Пользователь @${user.username || user.id} (ID: ${user.id}) добавлен в администраторы.`);
+      } else {
+        ctx.reply(`ℹ️ Пользователь @${user.username || user.id} уже является администратором.`);
+      }
     } catch (error) {
       console.error('Add admin error:', error);
       ctx.reply('❌ Ошибка при добавлении администратора.');
@@ -600,6 +637,7 @@ bot.on('message', async (ctx) => {
   }
 });
 
+// В обработчике текстовых сообщений:
 bot.on('text', async (ctx) => {
   if (ctx.session && ctx.session.waitingForAdmin) {
     const input = ctx.message.text.trim();
@@ -623,9 +661,14 @@ bot.on('text', async (ctx) => {
       }
       
       if (userId) {
-        await addAdmin(userId, username);
+        const result = await addAdmin(userId, username);
         delete ctx.session.waitingForAdmin;
-        ctx.reply(`✅ Пользователь ${ctx.session.waitingForAdmin === 'username' ? '@' + username : 'с ID ' + userId} добавлен в администраторы.`);
+        
+        if (result.message === 'added') {
+          ctx.reply(`✅ Пользователь ${ctx.session.waitingForAdmin === 'username' ? '@' + username : 'с ID ' + userId} добавлен в администраторы.`);
+        } else {
+          ctx.reply(`ℹ️ Пользователь ${ctx.session.waitingForAdmin === 'username' ? '@' + username : 'с ID ' + userId} уже является администратором.`);
+        }
       }
     } catch (error) {
       console.error('Add admin error:', error);
