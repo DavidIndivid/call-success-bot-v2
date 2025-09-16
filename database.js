@@ -15,15 +15,16 @@ const db = new sqlite3.Database(dbPath, (err) => {
 
 function initTables() {
   // Таблица для привязки сценариев к чатам
-  db.run(`
-    CREATE TABLE IF NOT EXISTS scenario_mappings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      skorozvon_scenario_id INTEGER NOT NULL UNIQUE,
-      skorozvon_scenario_name TEXT,
-      telegram_chat_id TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+db.run(`
+  CREATE TABLE IF NOT EXISTS scenario_mappings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    skorozvon_scenario_id INTEGER NOT NULL UNIQUE,
+    skorozvon_scenario_name TEXT,
+    telegram_chat_id TEXT NOT NULL,
+    telegram_chat_title TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
 
   // Таблица для администраторов
   db.run(`
