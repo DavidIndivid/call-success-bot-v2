@@ -4,15 +4,15 @@ const path = require("path");
 const dbPath = path.resolve(__dirname, "bot_data.db");
 const db = new sqlite3.Database(dbPath, err => {
   if (err) {
-    console.error("Database connection error:", err);
+    console.error("Ошибка подключения к базе данных:", err);
   } else {
-    console.log("Connected to SQLite database.");
+    console.log("Подключено к SQLite базе данных.");
     initTables();
   }
 });
 
 function initTables() {
-  // Таблица привязок: сценарий → чат
+  // Таблица привязок сценарий → чат
   db.run(`
     CREATE TABLE IF NOT EXISTS scenario_mappings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,26 +40,14 @@ function initTables() {
     )
   `);
 
-  // Таблица обычных админов
+  // Таблица админов
   db.run(`
     CREATE TABLE IF NOT EXISTS bot_admins (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      telegram_id TEXT NOT NULL UNIQUE,
+      telegram_id TEXT UNIQUE,
       name TEXT,
       role TEXT DEFAULT 'normal',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  // Таблица пользователей бота
-  db.run(`
-    CREATE TABLE IF NOT EXISTS bot_users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      telegram_id TEXT NOT NULL UNIQUE,
-      username TEXT,
-      first_name TEXT,
-      last_name TEXT,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 }

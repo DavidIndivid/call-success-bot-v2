@@ -22,8 +22,9 @@ app.use(express.json());
 const processedCallIds = new Set();
 let availableScenarios = [];
 let availableChats = [];
+let knownUsers = new Map(); // id -> {name}
 
-/* ================= DB Functions ================= */
+// ================= DB Functions =================
 function getChatIdForScenario(scenarioId) {
   return new Promise((resolve, reject) => {
     db.get(
@@ -61,7 +62,7 @@ function listScenarioMappings() {
   });
 }
 
-/* ================= Admin Functions ================= */
+// ================= Admin Functions =================
 function listAdmins() {
   return new Promise((resolve, reject) => {
     db.all(`SELECT * FROM bot_admins`, [], (err, rows) => {
@@ -112,7 +113,7 @@ function canEditAdmins(telegramId) {
   return MAIN_ADMINS.includes(telegramId.toString());
 }
 
-/* ================= Skorozvon API ================= */
+// ================= Skorozvon API =================
 async function getAccessToken() {
   try {
     const response = await axios.post(
@@ -128,7 +129,7 @@ async function getAccessToken() {
     );
     return response.data.access_token;
   } catch (error) {
-    console.error("Ошибка получения токена:", error.response?.data || error.message);
+    console.error("Ошибка токена:", error.response?.data || error.message);
     return null;
   }
 }
@@ -159,24 +160,20 @@ async function refreshScenariosCache() {
   console.log(`Сценарии обновлены: ${availableScenarios.length}`);
 }
 
-/* ================= Telegram Bot ================= */
+// ================= Telegram Bot =================
 const bot = new Telegraf(TG_BOT_TOKEN);
 
-async function updateAvailableChats(ctx) {
-  if (ctx.chat && (ctx.chat.type === "group" || ctx.chat.type === "supergroup")) {
-    const chatId = ctx.chat.id;
-    const chatTitle = ctx.chat.title || `Чат ${chatId}`;
+// Убираем конфликт webhook/polling
+bot.telegram.deleteWebhook().then(() => bot.launch());
 
-    const existingChat = availableChats.find(c => c.id === chatId);
-    if (!existingChat) {
-      availableChats.push({
-        id: chatId,
-        title: chatTitle,
-        type: ctx.chat.type,
-        updatedAt: new Date(),
-      });
-      console.log(`Добавлен чат: ${chatTitle} (${chatId})`);
-    }
+async function updateKnownUsers(ctx) {
+  if (ctx.chat.type === "private") {
+    knownUsers.set(ctx.from.id.toString(), ctx.from.first_name || "Unknown");
+  } else if (ctx.chat.type === "group" || ctx.chat.type === "supergroup") {
+    const chatId = ctx.chat.id;
+    const chatTitle = ctx.chat.title || `Chat ${chatId}`;
+    const existing = availableChats.find(c => c.id === chatId);
+    if (!existing) availableChats.push({ id: chatId, title: chatTitle, type: ctx.chat.type });
   }
 }
 
@@ -205,55 +202,20 @@ async function sendAudioToTelegram(callId, caption, targetChatId) {
   }
 }
 
-/* ================= Bot Commands ================= */
+// ================= Bot Commands =================
 bot.start(async ctx => {
-  if (!await isAdmin(ctx.from.id)) return ctx.reply("❌ Доступ запрещён.");
+  if (!await isAdmin(ctx.from.id)) return ctx.reply("❌ У вас нет доступа к боту.");
 
-  const userId = ctx.from.id.toString();
-  let msg = "🤖 Бот для обработки звонков Skorozvon\n\n";
-  msg += "/setup - Привязка сценариев\n/list - Список привязок\n/refresh - Обновить сценарии\n/chats - Список чатов\n";
-  if (canEditAdmins(userId)) msg += "/admins - Управление админами\n/addadmin - Добавить админа\n/deladmin - Удалить админа\n";
-
+  let msg = "🤖 CallSuccess AI Processor\n\n";
+  msg += "/setup - Настройка сценариев\n/list - Список привязок\n/refresh - Обновить сценарии\n/chats - Список чатов\n";
+  if (canEditAdmins(ctx.from.id)) msg += "/admins - Управление админами\n";
+  
   ctx.reply(msg);
 });
 
-bot.command("setup", async ctx => {
-  if (!await isAdmin(ctx.from.id)) return ctx.reply("❌ У вас нет прав для этой команды.");
-  if (availableScenarios.length === 0) await refreshScenariosCache();
-  if (availableScenarios.length === 0) return ctx.reply("❌ Сценарии не загружены.");
-  if (availableChats.length === 0) return ctx.reply("❌ Нет доступных чатов.");
-
-  ctx.reply(
-    "Выберите сценарий:",
-    Markup.inlineKeyboard(
-      availableScenarios.map(s => [Markup.button.callback(s.name, `select_scenario_${s.id}`)]),
-      { columns: 1 }
-    )
-  );
-});
-
-bot.command("list", async ctx => {
-  if (!await isAdmin(ctx.from.id)) return ctx.reply("❌ У вас нет прав для этой команды.");
-  const mappings = await listScenarioMappings();
-  if (mappings.length === 0) return ctx.reply("ℹ️ Привязки не настроены.");
-  ctx.reply(mappings.map(m => `📋 ${m.skorozvon_scenario_name} → ${m.telegram_chat_title}`).join("\n\n"));
-});
-
-bot.command("refresh", async ctx => {
-  if (!await isAdmin(ctx.from.id)) return ctx.reply("❌ У вас нет прав для этой команды.");
-  await refreshScenariosCache();
-  ctx.reply(`✅ Загружено сценариев: ${availableScenarios.length}`);
-});
-
-bot.command("chats", async ctx => {
-  if (!await isAdmin(ctx.from.id)) return ctx.reply("❌ У вас нет прав для этой команды.");
-  if (availableChats.length === 0) return ctx.reply("ℹ️ Нет доступных чатов.");
-  ctx.reply(availableChats.map(c => `💬 ${c.title} (ID: ${c.id})`).join("\n"));
-});
-
-/* ================= Admin Management ================= */
+// ======== Настройка админов через аккаунты ========
 bot.command("admins", async ctx => {
-  if (!canEditAdmins(ctx.from.id)) return ctx.reply("❌ У вас нет прав для этой команды.");
+  if (!canEditAdmins(ctx.from.id)) return ctx.reply("❌ У вас нет прав на управление админами.");
   const admins = await listAdmins();
 
   let msg = `👑 Главные админы:\n${MAIN_ADMINS.join(", ")}\n\n`;
@@ -266,31 +228,28 @@ bot.command("admins", async ctx => {
   ]));
 });
 
-// Выбор добавления админа
+// Выбор добавления админа (по аккаунтам, кто писал боту в личке)
 bot.action("menu_add_admin", async ctx => {
-  if (!canEditAdmins(ctx.from.id)) return ctx.reply("❌ У вас нет прав для этой команды.");
+  if (!canEditAdmins(ctx.from.id)) return ctx.reply("❌ У вас нет прав.");
 
-  if (availableChats.length === 0) return ctx.reply("ℹ️ Нет доступных пользователей для добавления.");
+  if (knownUsers.size === 0) return ctx.reply("ℹ️ Нет пользователей для назначения админом.");
 
   ctx.editMessageText("Выберите пользователя для назначения админом:", Markup.inlineKeyboard(
-    availableChats.map(u => [Markup.button.callback(`${u.title} (ID: ${u.id})`, `addadmin_select_${u.id}`)]),
+    Array.from(knownUsers.entries()).map(([id, name]) => [Markup.button.callback(`${name} (ID: ${id})`, `addadmin_select_${id}`)]),
     { columns: 1 }
   ));
 });
 
-// Подтверждение добавления админа
 bot.action(/addadmin_select_(.+)/, async ctx => {
-  const chatId = ctx.match[1];
-  const chat = availableChats.find(c => c.id == chatId);
-  if (!chat) return ctx.reply("❌ Пользователь не найден.");
-  
-  await addAdmin(chatId, chat.title);
-  ctx.editMessageText(`✅ Админ добавлен: ${chat.title} (ID: ${chatId})`);
+  const userId = ctx.match[1];
+  const name = knownUsers.get(userId) || "Unknown";
+  await addAdmin(userId, name);
+  ctx.editMessageText(`✅ Админ добавлен: ${name} (ID: ${userId})`);
 });
 
-// Выбор удаления админа
+// Удаление админа
 bot.action("menu_remove_admin", async ctx => {
-  if (!canEditAdmins(ctx.from.id)) return ctx.reply("❌ У вас нет прав для этой команды.");
+  if (!canEditAdmins(ctx.from.id)) return ctx.reply("❌ У вас нет прав.");
 
   const admins = await listAdmins();
   if (admins.length === 0) return ctx.reply("ℹ️ Нет обычных админов для удаления.");
@@ -301,33 +260,18 @@ bot.action("menu_remove_admin", async ctx => {
   ));
 });
 
-// Подтверждение удаления админа
 bot.action(/deladmin_select_(.+)/, async ctx => {
   const telegramId = ctx.match[1];
   const admin = (await listAdmins()).find(a => a.telegram_id === telegramId);
   if (!admin) return ctx.reply("❌ Админ не найден.");
-
   await removeAdmin(telegramId);
   ctx.editMessageText(`✅ Админ удалён: ${admin.name} (ID: ${telegramId})`);
 });
 
-/* ================= Capture Chats ================= */
-bot.on("message", updateAvailableChats);
+// ======== Capture users and chats ========
+bot.on("message", updateKnownUsers);
 
-/* ================= Bot Launch ================= */
-bot.telegram.deleteWebhook()
-  .then(() => {
-    bot.launch().then(() => {
-      console.log("Бот запущен через polling...");
-      refreshScenariosCache();
-    });
-  })
-  .catch(err => console.error("Ошибка при удалении webhook:", err.message));
-
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
-
-/* ================= Webhook Handler ================= */
+// ================= Webhook Handler =================
 app.post("/webhook", async (req, res) => {
   const callId = req.body?.call?.id;
   const resultName = req.body?.call_result?.result_name;
@@ -344,18 +288,18 @@ app.post("/webhook", async (req, res) => {
 
   let targetChatId = await getChatIdForScenario(scenarioId);
   if (!targetChatId) {
-    console.log(`⚠️ Нет привязки для сценария ${scenarioId}, пропускаем.`);
+    console.log(`⚠️ Нет привязки для сценария ${scenarioId}, пропуск.`);
     return res.sendStatus(200);
   }
 
-  const manager = req.body?.call?.user?.name || "Неизвестен";
-  const phone = req.body?.call?.phone || "Неизвестен";
-  const comment = req.body?.call_result?.comment || "Комментарий отсутствует";
+  const manager = req.body?.call?.user?.name || "Unknown";
+  const phone = req.body?.call?.phone || "Unknown";
+  const comment = req.body?.call_result?.comment || "Нет комментария";
   const startedAt = req.body?.call?.started_at;
   const formattedDate = new Date(startedAt || Date.now()).toLocaleString("ru-RU");
 
   const message = `
-✅ ПОТЕНЦИАЛЬНЫЙ КЛИЕНТ
+✅ ПОТЕНЦИАЛЬНЫЙ КЛИЕНТ 
 
 👤 Менеджер: ${manager}
 📞 Телефон: ${phone}
@@ -370,7 +314,7 @@ ID звонка: ${callId}`;
   if (!audioSent) {
     await axios.post(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
       chat_id: targetChatId,
-      text: message + "\n\n❌ Аудиозапись недоступна.",
+      text: message + "\n\n❌ Запись недоступна.",
       parse_mode: "HTML",
     });
   }
@@ -378,6 +322,9 @@ ID звонка: ${callId}`;
   res.sendStatus(200);
 });
 
-/* ================= Express ================= */
+// ================= Express =================
 app.get("/", (req, res) => res.send("CallSuccess AI Processor запущен"));
 app.listen(PORT, () => console.log(`Сервер запущен на порту ${PORT}`));
+
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
