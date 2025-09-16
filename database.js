@@ -13,7 +13,6 @@ const db = new sqlite3.Database(dbPath, (err) => {
 });
 
 function initTables() {
-  // Mapping scenarios → chats
   db.run(`
     CREATE TABLE IF NOT EXISTS scenario_mappings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,17 +24,17 @@ function initTables() {
     )
   `);
 
-  // Admin users
   db.run(`
     CREATE TABLE IF NOT EXISTS admin_users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      telegram_user_id INTEGER NOT NULL UNIQUE,
+      telegram_user_id INTEGER,
       username TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(telegram_user_id),
+      UNIQUE(username)
     )
   `);
 
-  // Call logs
   db.run(`
     CREATE TABLE IF NOT EXISTS call_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,6 +47,15 @@ function initTables() {
       started_at DATETIME,
       processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       telegram_chat_id_sent TEXT
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS chats (
+      id INTEGER PRIMARY KEY,
+      title TEXT,
+      type TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 }
