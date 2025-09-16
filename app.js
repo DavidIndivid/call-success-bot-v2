@@ -7,23 +7,28 @@ const db = require("./database.js");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 
+// Load main admins from .env
+const MAIN_ADMINS = process.env.MAIN_ADMINS
+  ? process.env.MAIN_ADMINS.split(",").map((id) => id.trim())
+  : [];
+
+// Success result names
 const SUCCESSFUL_RESULT_NAMES = process.env.SUCCESSFUL_RESULT_NAMES
   ? process.env.SUCCESSFUL_RESULT_NAMES.split(",")
-  : ["Горячий", "Горячая", "Hot", "Успех"];
-
-const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
-const MAIN_ADMINS = process.env.MAIN_ADMINS
-  ? process.env.MAIN_ADMINS.split(",").map(id => id.trim())
-  : [];
+  : ["Успех", "Горячий", "Горячая", "Hot"];
 
 app.use(express.json());
 
+// Track processed calls to avoid duplicates
 const processedCallIds = new Set();
+
+// Cache
 let availableScenarios = [];
 let availableChats = [];
 
-/* ================= DB Functions ================= */
+// === DB utils ===
 function getChatIdForScenario(scenarioId) {
   return new Promise((resolve, reject) => {
     db.get(
@@ -37,6 +42,41 @@ function getChatIdForScenario(scenarioId) {
   });
 }
 
+function addAdmin(userId, username) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `INSERT OR IGNORE INTO admin_users (telegram_user_id, username) VALUES (?, ?)`,
+      [userId, username],
+      function (err) {
+        if (err) reject(err);
+        resolve({ changes: this.changes });
+      }
+    );
+  });
+}
+
+function removeAdmin(userId) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `DELETE FROM admin_users WHERE telegram_user_id = ?`,
+      [userId],
+      function (err) {
+        if (err) reject(err);
+        resolve({ changes: this.changes });
+      }
+    );
+  });
+}
+
+function listAdmins() {
+  return new Promise((resolve, reject) => {
+    db.all(`SELECT * FROM admin_users`, [], (err, rows) => {
+      if (err) reject(err);
+      resolve(rows);
+    });
+  });
+}
+
 function addScenarioMapping(scenarioId, scenarioName, chatId, chatTitle) {
   return new Promise((resolve, reject) => {
     db.run(
@@ -46,7 +86,7 @@ function addScenarioMapping(scenarioId, scenarioName, chatId, chatTitle) {
       [scenarioId, scenarioName, chatId, chatTitle],
       function (err) {
         if (err) reject(err);
-        resolve({ id: this.lastID, changes: this.changes });
+        resolve({ changes: this.changes });
       }
     );
   });
@@ -61,58 +101,45 @@ function listScenarioMappings() {
   });
 }
 
-/* ================= Admin Functions ================= */
-function listAdmins() {
-  return new Promise((resolve, reject) => {
-    db.all(`SELECT * FROM bot_admins`, [], (err, rows) => {
-      if (err) reject(err);
-      resolve(rows);
-    });
-  });
+function logCall(callData, targetChatId) {
+  db.run(
+    `INSERT OR IGNORE INTO call_logs 
+     (call_id, scenario_id, result_name, manager_name, phone, comment, started_at, telegram_chat_id_sent) 
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      callData.callId,
+      callData.scenarioId,
+      callData.resultName,
+      callData.managerName,
+      callData.phone,
+      callData.comment,
+      callData.startedAt,
+      targetChatId,
+    ],
+    (err) => {
+      if (err) console.error("Error logging call:", err);
+    }
+  );
 }
 
-function addAdmin(telegramId, name, role = "normal") {
-  return new Promise((resolve, reject) => {
-    db.run(
-      `INSERT OR IGNORE INTO bot_admins (telegram_id, name, role) VALUES (?, ?, ?)`,
-      [telegramId, name, role],
-      function (err) {
-        if (err) reject(err);
-        resolve({ id: this.lastID, changes: this.changes });
-      }
+// === Roles ===
+function isMainAdmin(userId) {
+  return MAIN_ADMINS.includes(String(userId));
+}
+
+async function isAdmin(userId) {
+  if (isMainAdmin(userId)) return true;
+  const row = await new Promise((resolve) => {
+    db.get(
+      `SELECT 1 FROM admin_users WHERE telegram_user_id = ?`,
+      [userId],
+      (err, row) => resolve(row)
     );
-  });
-}
-
-function removeAdmin(telegramId) {
-  return new Promise((resolve, reject) => {
-    db.run(
-      `DELETE FROM bot_admins WHERE telegram_id = ?`,
-      [telegramId],
-      function (err) {
-        if (err) reject(err);
-        resolve({ changes: this.changes });
-      }
-    );
-  });
-}
-
-async function isAdmin(telegramId) {
-  if (MAIN_ADMINS.includes(telegramId.toString())) return true;
-  const row = await new Promise((resolve, reject) => {
-    db.get(`SELECT * FROM bot_admins WHERE telegram_id = ?`, [telegramId], (err, r) => {
-      if (err) reject(err);
-      resolve(r);
-    });
   });
   return !!row;
 }
 
-function canEditAdmins(telegramId) {
-  return MAIN_ADMINS.includes(telegramId.toString());
-}
-
-/* ================= Skorozvon API ================= */
+// === Skorozvon API ===
 async function getAccessToken() {
   try {
     const response = await axios.post(
@@ -128,241 +155,128 @@ async function getAccessToken() {
     );
     return response.data.access_token;
   } catch (error) {
-    console.error("Ошибка токена:", error.response?.data || error.message);
+    console.error("Token error:", error.response?.data || error.message);
     return null;
   }
 }
 
 async function fetchScenariosFromSkorozvon() {
   try {
-    const accessToken = await getAccessToken();
-    if (!accessToken) return [];
+    const token = await getAccessToken();
+    if (!token) return [];
 
     const response = await axios.get(
       "https://api.skorozvon.ru/api/v2/scenarios",
-      { headers: { Authorization: `Bearer ${accessToken}` } }
+      { headers: { Authorization: `Bearer ${token}` } }
     );
 
-    return response.data?.data?.map(s => ({
-      id: s.id,
-      name: s.name,
-      system: s.system,
-    })) || [];
-  } catch (error) {
-    console.error("Ошибка при получении сценариев:", error.response?.data || error.message);
+    return (
+      response.data?.data?.map((s) => ({
+        id: s.id,
+        name: s.name,
+      })) || []
+    );
+  } catch (e) {
+    console.error("Error fetching scenarios:", e.message);
     return [];
   }
 }
 
 async function refreshScenariosCache() {
   availableScenarios = await fetchScenariosFromSkorozvon();
-  console.log(`Сценарии обновлены: ${availableScenarios.length}`);
+  console.log(`Refreshed scenarios cache: ${availableScenarios.length} found`);
 }
 
-/* ================= Telegram Bot ================= */
+// === Telegram bot ===
 const bot = new Telegraf(TG_BOT_TOKEN);
 
-async function updateAvailableChats(ctx) {
-  if (ctx.chat && (ctx.chat.type === "group" || ctx.chat.type === "supergroup")) {
-    const chatId = ctx.chat.id;
-    const chatTitle = ctx.chat.title || `Chat ${chatId}`;
-
-    const existingChat = availableChats.find(c => c.id === chatId);
-    if (!existingChat) {
-      availableChats.push({
-        id: chatId,
-        title: chatTitle,
-        type: ctx.chat.type,
-        updatedAt: new Date(),
-      });
-      console.log(`Добавлен чат: ${chatTitle} (${chatId})`);
-    }
+bot.start(async (ctx) => {
+  const userId = ctx.from.id;
+  if (isMainAdmin(userId)) {
+    ctx.reply("👑 Welcome, Main Admin! Use /admins to manage.");
+  } else if (await isAdmin(userId)) {
+    ctx.reply("✅ You are an admin. Use /setup to bind scenarios.");
+  } else {
+    ctx.reply("❌ Access denied. Contact the main admin.");
   }
-}
-
-async function sendAudioToTelegram(callId, caption, targetChatId) {
-  try {
-    const accessToken = await getAccessToken();
-    if (!accessToken) return false;
-
-    const recordingUrl = `https://api.skorozvon.ru/api/v2/calls/${callId}.mp3?access_token=${accessToken}`;
-    const audioResponse = await axios.get(recordingUrl, { responseType: "stream" });
-
-    const formData = new FormData();
-    formData.append("chat_id", targetChatId);
-    formData.append("audio", audioResponse.data);
-    formData.append("caption", caption);
-    formData.append("parse_mode", "HTML");
-
-    await axios.post(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendAudio`, formData, {
-      headers: formData.getHeaders(),
-    });
-
-    return true;
-  } catch (error) {
-    console.error("Ошибка отправки аудио:", error.message);
-    return false;
-  }
-}
-
-/* ================= Bot Commands ================= */
-bot.start(async ctx => {
-  if (!await isAdmin(ctx.from.id)) return ctx.reply("❌ У вас нет доступа к боту.");
-
-  const userId = ctx.from.id.toString();
-  let msg = "🤖 Бот для обработки звонков Skorozvon\n\n";
-  msg += "/setup - Привязать сценарий к чату\n/list - Показать привязки\n/refresh - Обновить сценарии\n/chats - Список доступных чатов\n";
-  if (canEditAdmins(userId)) msg += "/admins - Список админов\n/addadmin - Добавить админа\n/deladmin - Удалить админа\n";
-
-  ctx.reply(msg);
 });
 
-bot.command("setup", async ctx => {
-  if (!await isAdmin(ctx.from.id)) return ctx.reply("❌ У вас нет прав.");
-
-  if (availableScenarios.length === 0) await refreshScenariosCache();
-  if (availableScenarios.length === 0) return ctx.reply("❌ Сценарии не загружены.");
-  if (availableChats.length === 0) return ctx.reply("❌ Нет доступных чатов.");
-
-  ctx.reply(
-    "Выберите сценарий:",
-    Markup.inlineKeyboard(
-      availableScenarios.map(s => [Markup.button.callback(s.name, `select_scenario_${s.id}`)]),
-      { columns: 1 }
-    )
-  );
-});
-
-bot.action(/select_scenario_(\d+)/, async ctx => {
-  const scenarioId = ctx.match[1];
-  const scenario = availableScenarios.find(s => s.id == scenarioId);
-  ctx.reply(
-    `Сценарий: ${scenario.name}\n\nВыберите чат:`,
-    Markup.inlineKeyboard(
-      availableChats.map(c => [Markup.button.callback(c.title, `select_chat_${scenarioId}_${c.id}`)]),
-      { columns: 1 }
-    )
-  );
-});
-
-bot.action(/select_chat_(\d+)_(-?\d+)/, async ctx => {
-  const scenarioId = ctx.match[1];
-  const chatId = ctx.match[2];
-  const scenario = availableScenarios.find(s => s.id == scenarioId);
-  const chat = availableChats.find(c => c.id == chatId);
-  await addScenarioMapping(scenarioId, scenario.name, chatId, chat.title);
-  ctx.editMessageText(`✅ Сценарий "${scenario.name}" привязан к чату "${chat.title}".`);
-});
-
-bot.command("list", async ctx => {
-  if (!await isAdmin(ctx.from.id)) return ctx.reply("❌ У вас нет прав.");
-  const mappings = await listScenarioMappings();
-  if (mappings.length === 0) return ctx.reply("ℹ️ Привязки не установлены.");
-  ctx.reply(mappings.map(m => `📋 ${m.skorozvon_scenario_name} → ${m.telegram_chat_title}`).join("\n\n"));
-});
-
-bot.command("refresh", async ctx => {
-  if (!await isAdmin(ctx.from.id)) return ctx.reply("❌ У вас нет прав.");
-  await refreshScenariosCache();
-  ctx.reply(`✅ Загружено ${availableScenarios.length} сценариев.`);
-});
-
-bot.command("chats", async ctx => {
-  if (!await isAdmin(ctx.from.id)) return ctx.reply("❌ У вас нет прав.");
-  if (availableChats.length === 0) return ctx.reply("ℹ️ Нет доступных чатов.");
-  ctx.reply(availableChats.map(c => `💬 ${c.title} (ID: ${c.id})`).join("\n"));
-});
-
-/* ================= Admin Management Commands ================= */
-bot.command("addadmin", async ctx => {
-  const userId = ctx.from.id.toString();
-  if (!canEditAdmins(userId)) return ctx.reply("❌ Нет прав для добавления админов.");
-
+// Manage admins (only main admins)
+bot.command("add_admin", async (ctx) => {
+  if (!isMainAdmin(ctx.from.id))
+    return ctx.reply("❌ Only main admins can do this.");
   const args = ctx.message.text.split(" ").slice(1);
-  if (!args[0]) return ctx.reply("❌ Укажите ID или username нового админа.");
+  if (args.length === 0) return ctx.reply("Usage: /add_admin <id|@username>");
 
-  let telegramIdOrUsername = args[0].replace("@", "");
-  let name = args.slice(1).join(" ") || telegramIdOrUsername;
-
-  try {
-    await addAdmin(telegramIdOrUsername, name);
-    ctx.reply(`✅ Админ добавлен: ${name} (${telegramIdOrUsername})`);
-  } catch (err) {
-    console.error(err);
-    ctx.reply("❌ Ошибка при добавлении админа.");
+  let userId, username;
+  if (args[0].startsWith("@")) {
+    username = args[0].replace("@", "");
+    userId = ctx.from.id; // temporary, will be updated when user talks
+  } else {
+    userId = args[0];
+    username = "unknown";
   }
+
+  await addAdmin(userId, username);
+  ctx.reply(`✅ Admin added: ${userId}`);
+  try {
+    await bot.telegram.sendMessage(userId, "✅ You are now an admin!");
+  } catch {}
 });
 
-bot.command("deladmin", async ctx => {
-  const userId = ctx.from.id.toString();
-  if (!canEditAdmins(userId)) return ctx.reply("❌ Нет прав для удаления админов.");
-
+bot.command("remove_admin", async (ctx) => {
+  if (!isMainAdmin(ctx.from.id))
+    return ctx.reply("❌ Only main admins can do this.");
   const args = ctx.message.text.split(" ").slice(1);
-  if (!args[0]) return ctx.reply("❌ Укажите ID или username админа для удаления.");
-
-  let telegramIdOrUsername = args[0].replace("@", "");
-  try {
-    const admins = await listAdmins();
-    const admin = admins.find(a => a.telegram_id === telegramIdOrUsername);
-    if (!admin) return ctx.reply("❌ Такой админ не найден.");
-    await removeAdmin(telegramIdOrUsername);
-    ctx.reply(`✅ Админ удален: ${admin.name} (${telegramIdOrUsername})`);
-  } catch (err) {
-    console.error(err);
-    ctx.reply("❌ Ошибка при удалении админа.");
-  }
+  if (args.length === 0) return ctx.reply("Usage: /remove_admin <id>");
+  const userId = args[0];
+  await removeAdmin(userId);
+  ctx.reply(`✅ Admin removed: ${userId}`);
 });
 
-bot.command("admins", async ctx => {
-  const userId = ctx.from.id.toString();
-  if (!await isAdmin(userId)) return ctx.reply("❌ Нет прав для просмотра админов.");
-
+bot.command("list_admins", async (ctx) => {
+  if (!isMainAdmin(ctx.from.id))
+    return ctx.reply("❌ Only main admins can do this.");
   const admins = await listAdmins();
-  let msg = `👑 Главные админы:\n${MAIN_ADMINS.join(", ")}\n\n`;
-  if (admins.length) msg += `🛡️ Обычные админы:\n${admins.map(a => `${a.name} (${a.telegram_id})`).join("\n")}`;
-  else msg += "🛡️ Обычные админы: нет";
-
-  ctx.reply(msg);
+  const text = admins
+    .map((a) => `👤 ${a.username || "unknown"} (ID: ${a.telegram_user_id})`)
+    .join("\n");
+  ctx.reply(`Admins:\n\n${text}`);
 });
 
-/* ================= Capture Chats ================= */
-bot.on("message", updateAvailableChats);
-
-/* ================= Launch Bot ================= */
-bot.launch().then(() => {
-  console.log("Телеграм бот запущен");
-  refreshScenariosCache();
-});
-
-/* ================= Webhook Handler ================= */
+// === Webhook handler ===
 app.post("/webhook", async (req, res) => {
   const callId = req.body?.call?.id;
   const resultName = req.body?.call_result?.result_name;
   const scenarioId = req.body?.call?.scenario_id;
-  if (!scenarioId || !callId) return res.sendStatus(200);
 
+  if (!callId || !scenarioId) return res.sendStatus(200);
   if (processedCallIds.has(callId)) return res.sendStatus(200);
-  processedCallIds.add(callId);
-  setTimeout(() => processedCallIds.delete(callId), 86400000);
 
-  const isSuccessful = resultName &&
-    SUCCESSFUL_RESULT_NAMES.some(n => resultName.toLowerCase().includes(n.toLowerCase()));
+  processedCallIds.add(callId);
+  setTimeout(() => processedCallIds.delete(callId), 24 * 60 * 60 * 1000);
+
+  const isSuccessful =
+    resultName &&
+    SUCCESSFUL_RESULT_NAMES.some((n) =>
+      resultName.toLowerCase().includes(n.toLowerCase())
+    );
+
   if (!isSuccessful) return res.sendStatus(200);
 
-  let targetChatId = await getChatIdForScenario(scenarioId);
-  if (!targetChatId) {
-    console.log(`⚠️ Нет привязки для сценария ${scenarioId}, пропускаем.`);
-    return res.sendStatus(200);
-  }
+  const targetChatId = await getChatIdForScenario(scenarioId);
+  if (!targetChatId) return res.sendStatus(200);
 
-  const manager = req.body?.call?.user?.name || "Unknown";
-  const phone = req.body?.call?.phone || "Unknown";
-  const comment = req.body?.call_result?.comment || "Нет комментария";
+  const manager = req.body?.call?.user?.name || "Не указан";
+  const phone = req.body?.call?.phone || "Не указан";
+  const comment = req.body?.call_result?.comment || "нет комментария";
   const startedAt = req.body?.call?.started_at;
-  const formattedDate = new Date(startedAt || Date.now()).toLocaleString("ru-RU");
+  const formattedDate = new Date(startedAt || Date.now()).toLocaleDateString(
+    "ru-RU"
+  );
 
   const message = `
-✅ ПОТЕНЦИАЛЬНЫЙ КЛИЕНТ
+  ✅ ПОТЕНЦИАЛЬНЫЙ КЛИЕНТ 
 
 👤 Менеджер: ${manager}
 📞 Телефон: ${phone}
@@ -372,22 +286,58 @@ app.post("/webhook", async (req, res) => {
 Дата: ${formattedDate}
 ID звонка: ${callId}`;
 
-  await new Promise(r => setTimeout(r, 120000));
-  const audioSent = await sendAudioToTelegram(callId, message, targetChatId);
-  if (!audioSent) {
-    await axios.post(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
-      chat_id: targetChatId,
-      text: message + "\n\n❌ Запись недоступна.",
-      parse_mode: "HTML",
-    });
+  await new Promise((r) => setTimeout(r, 120000));
+
+  const sent = await sendAudioToTelegram(callId, message, targetChatId);
+  logCall(
+    { callId, scenarioId, resultName, manager, phone, comment, startedAt },
+    targetChatId
+  );
+
+  if (!sent) {
+    await bot.telegram.sendMessage(
+      targetChatId,
+      message + "\n\n❌ Запись недоступна."
+    );
   }
 
   res.sendStatus(200);
 });
 
-/* ================= Express ================= */
-app.get("/", (req, res) => res.send("CallSuccess AI Processor запущен"));
-app.listen(PORT, () => console.log(`Сервер запущен на порту ${PORT}`));
+async function sendAudioToTelegram(callId, caption, chatId) {
+  try {
+    const token = await getAccessToken();
+    if (!token) return false;
 
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
+    const url = `https://api.skorozvon.ru/api/v2/calls/${callId}.mp3?access_token=${token}`;
+    const audio = await axios.get(url, {
+      responseType: "stream",
+      timeout: 30000,
+    });
+
+    const form = new FormData();
+    form.append("chat_id", chatId);
+    form.append("audio", audio.data);
+    form.append("caption", caption);
+    form.append("parse_mode", "HTML");
+
+    await axios.post(
+      `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendAudio`,
+      form,
+      {
+        headers: form.getHeaders(),
+      }
+    );
+    return true;
+  } catch (e) {
+    console.error("Audio send error:", e.message);
+    return false;
+  }
+}
+
+// Start bot & server
+bot.launch().then(() => {
+  console.log("🤖 Bot launched");
+  refreshScenariosCache();
+});
+app.listen(PORT, () => console.log(`🌐 Server listening on ${PORT}`));

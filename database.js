@@ -2,33 +2,39 @@ const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
 
 const dbPath = path.resolve(__dirname, "bot_data.db");
-const db = new sqlite3.Database(dbPath, err => {
-  if (err) {
-    console.error("Ошибка подключения к базе данных:", err);
-  } else {
-    console.log("Подключено к SQLite базе данных.");
+const db = new sqlite3.Database(dbPath, (err) => {
+  if (err) console.error("DB error:", err);
+  else {
+    console.log("Connected to SQLite");
     initTables();
   }
 });
 
 function initTables() {
-  // Таблица привязки сценариев к чатам
   db.run(`
     CREATE TABLE IF NOT EXISTS scenario_mappings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      skorozvon_scenario_id INTEGER NOT NULL UNIQUE,
+      skorozvon_scenario_id INTEGER UNIQUE,
       skorozvon_scenario_name TEXT,
-      telegram_chat_id TEXT NOT NULL,
+      telegram_chat_id TEXT,
       telegram_chat_title TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
-  // Логи звонков
+  db.run(`
+    CREATE TABLE IF NOT EXISTS admin_users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      telegram_user_id INTEGER UNIQUE,
+      username TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   db.run(`
     CREATE TABLE IF NOT EXISTS call_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      call_id INTEGER NOT NULL UNIQUE,
+      call_id INTEGER UNIQUE,
       scenario_id INTEGER,
       result_name TEXT,
       manager_name TEXT,
@@ -37,17 +43,6 @@ function initTables() {
       started_at DATETIME,
       processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       telegram_chat_id_sent TEXT
-    )
-  `);
-
-  // Таблица админов (кроме главных из MAIN_ADMINS)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS bot_admins (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      telegram_id TEXT NOT NULL UNIQUE,
-      name TEXT,
-      role TEXT DEFAULT 'normal', -- normal для обычных админов
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 }
