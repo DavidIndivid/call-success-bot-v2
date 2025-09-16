@@ -46,8 +46,20 @@ function initTables() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       telegram_id TEXT NOT NULL UNIQUE,
       name TEXT,
-      role TEXT DEFAULT 'normal', -- normal или main
+      role TEXT DEFAULT 'normal',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Таблица пользователей бота
+  db.run(`
+    CREATE TABLE IF NOT EXISTS bot_users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      telegram_id TEXT NOT NULL UNIQUE,
+      username TEXT,
+      first_name TEXT,
+      last_name TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 }
