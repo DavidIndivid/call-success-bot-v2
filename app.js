@@ -8,14 +8,14 @@ const db = require("./database.js");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const SUCCESSFUL_RESULT_NAMES = process.env.SUCCESSFUL_RESULT_NAMES
-  ? process.env.SUCCESSFUL_RESULT_NAMES.split(",")
-  : ["Горячий", "Горячая", "Hot", "Успех"];
-
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const MAIN_ADMINS = process.env.MAIN_ADMINS
   ? process.env.MAIN_ADMINS.split(",").map((id) => id.trim())
   : [];
+
+const SUCCESSFUL_RESULT_NAMES = process.env.SUCCESSFUL_RESULT_NAMES
+  ? process.env.SUCCESSFUL_RESULT_NAMES.split(",")
+  : ["Горячий", "Горячая", "Hot", "Успех"];
 
 app.use(express.json());
 
@@ -32,19 +32,6 @@ function getChatIdForScenario(scenarioId) {
       (err, row) => {
         if (err) reject(err);
         resolve(row ? row.telegram_chat_id : null);
-      }
-    );
-  });
-}
-
-function isUserAdmin(telegramUserId) {
-  return new Promise((resolve, reject) => {
-    db.get(
-      `SELECT 1 FROM admin_users WHERE telegram_user_id = ?`,
-      [telegramUserId],
-      (err, row) => {
-        if (err) reject(err);
-        resolve(!!row);
       }
     );
   });
@@ -93,6 +80,19 @@ function addScenarioMapping(scenarioId, scenarioName, chatId, chatTitle) {
       function (err) {
         if (err) reject(err);
         resolve({ id: this.lastID, changes: this.changes });
+      }
+    );
+  });
+}
+
+function removeScenarioMapping(scenarioId) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `DELETE FROM scenario_mappings WHERE skorozvon_scenario_id = ?`,
+      [scenarioId],
+      function (err) {
+        if (err) reject(err);
+        resolve({ changes: this.changes });
       }
     );
   });
@@ -183,29 +183,75 @@ const bot = new Telegraf(TG_BOT_TOKEN);
 
 bot.start(async (ctx) => {
   const userId = ctx.from.id.toString();
+
   if (MAIN_ADMINS.includes(userId)) {
     await addAdmin(userId, ctx.from.username || "main_admin");
     ctx.reply(
-      "✅ You are the MAIN ADMIN.\n\nUse /setup to link scenarios."
+      "🤖 Добро пожаловать в CallSuccess Bot!\n\n" +
+      "Вы главный администратор.\n\n" +
+      "Команды:\n" +
+      "/setup – привязать сценарий к чату\n" +
+      "/list – список текущих привязок\n" +
+      "/refresh – обновить список сценариев\n" +
+      "/admins – управление администраторами\n" +
+      "/unlink – отвязать сценарий\n"
     );
   } else {
-    ctx.reply("🚫 Access denied. Contact the main admin.");
+    ctx.reply(
+      "🤖 Добро пожаловать в CallSuccess Bot!\n\n" +
+      "Вы не являетесь администратором.\n" +
+      "Обратитесь к главному админу для доступа."
+    );
   }
 });
 
+// === Управление админами (только для MAIN_ADMINS) ===
 bot.command("admins", async (ctx) => {
   if (!MAIN_ADMINS.includes(ctx.from.id.toString())) {
-    return ctx.reply("🚫 Only main admins can manage admins.");
+    return ctx.reply("🚫 Только главный администратор может управлять админами.");
   }
 
   const admins = await listAdmins();
-  if (admins.length === 0) return ctx.reply("ℹ️ No admins yet.");
+  const text =
+    admins.length > 0
+      ? "👥 Текущие администраторы:\n\n" +
+        admins.map((a) => `• @${a.username || "unknown"} (ID: ${a.telegram_user_id})`).join("\n")
+      : "ℹ️ Пока нет администраторов.";
+
+  ctx.reply(text, Markup.inlineKeyboard([
+    [Markup.button.callback("➕ Добавить админа", "add_admin")],
+    [Markup.button.callback("➖ Удалить админа", "remove_admin")]
+  ]));
+});
+
+// === Отвязка сценария (только для MAIN_ADMINS) ===
+bot.command("unlink", async (ctx) => {
+  if (!MAIN_ADMINS.includes(ctx.from.id.toString())) {
+    return ctx.reply("🚫 Только главный администратор может отвязывать сценарии.");
+  }
+
+  const mappings = await listScenarioMappings();
+  if (mappings.length === 0) {
+    return ctx.reply("ℹ️ Нет активных привязок.");
+  }
+
   ctx.reply(
-    "👥 Current admins:\n\n" +
-      admins
-        .map((a) => `• @${a.username || "unknown"} (ID: ${a.telegram_user_id})`)
-        .join("\n")
+    "Выберите сценарий для отвязки:",
+    Markup.inlineKeyboard(
+      mappings.map((m) => [
+        Markup.button.callback(
+          `❌ ${m.skorozvon_scenario_name} → ${m.telegram_chat_title}`,
+          `unlink_${m.skorozvon_scenario_id}`
+        ),
+      ])
+    )
   );
+});
+
+bot.action(/unlink_(\d+)/, async (ctx) => {
+  const scenarioId = ctx.match[1];
+  await removeScenarioMapping(scenarioId);
+  ctx.editMessageText(`✅ Сценарий ID ${scenarioId} отвязан.`);
 });
 
 // ===== Skorozvon webhook =====

@@ -1,40 +1,45 @@
+// database.js
 const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
 
 const dbPath = path.resolve(__dirname, "bot_data.db");
 const db = new sqlite3.Database(dbPath, (err) => {
-  if (err) console.error("DB error:", err);
-  else {
+  if (err) {
+    console.error("Error opening database:", err);
+  } else {
     console.log("Connected to SQLite");
     initTables();
   }
 });
 
 function initTables() {
+  // Mapping scenarios → chats
   db.run(`
     CREATE TABLE IF NOT EXISTS scenario_mappings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      skorozvon_scenario_id INTEGER UNIQUE,
+      skorozvon_scenario_id INTEGER NOT NULL UNIQUE,
       skorozvon_scenario_name TEXT,
-      telegram_chat_id TEXT,
+      telegram_chat_id TEXT NOT NULL,
       telegram_chat_title TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
+  // Admin users
   db.run(`
     CREATE TABLE IF NOT EXISTS admin_users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      telegram_user_id INTEGER UNIQUE,
+      telegram_user_id INTEGER NOT NULL UNIQUE,
       username TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
+  // Call logs
   db.run(`
     CREATE TABLE IF NOT EXISTS call_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      call_id INTEGER UNIQUE,
+      call_id INTEGER NOT NULL UNIQUE,
       scenario_id INTEGER,
       result_name TEXT,
       manager_name TEXT,
