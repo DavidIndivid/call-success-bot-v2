@@ -13,8 +13,8 @@ const SUCCESSFUL_RESULT_NAMES = process.env.SUCCESSFUL_RESULT_NAMES
   : ["Горячий", "Горячая", "Hot", "Успех"];
 
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
-const MAIN_ADMIN_IDS = process.env.MAIN_ADMIN_IDS
-  ? process.env.MAIN_ADMIN_IDS.split(",").map((id) => id.trim())
+const MAIN_ADMINS = process.env.MAIN_ADMINS
+  ? process.env.MAIN_ADMINS.split(",").map((id) => id.trim())
   : [];
 
 app.use(express.json());
@@ -183,7 +183,7 @@ const bot = new Telegraf(TG_BOT_TOKEN);
 
 bot.start(async (ctx) => {
   const userId = ctx.from.id.toString();
-  if (MAIN_ADMIN_IDS.includes(userId)) {
+  if (MAIN_ADMINS.includes(userId)) {
     await addAdmin(userId, ctx.from.username || "main_admin");
     ctx.reply(
       "✅ You are the MAIN ADMIN.\n\nUse /setup to link scenarios."
@@ -194,7 +194,7 @@ bot.start(async (ctx) => {
 });
 
 bot.command("admins", async (ctx) => {
-  if (!MAIN_ADMIN_IDS.includes(ctx.from.id.toString())) {
+  if (!MAIN_ADMINS.includes(ctx.from.id.toString())) {
     return ctx.reply("🚫 Only main admins can manage admins.");
   }
 
