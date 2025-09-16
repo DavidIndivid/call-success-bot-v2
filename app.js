@@ -357,14 +357,18 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  const manager = req.body?.call?.user?.name || "Unknown";
-  const phone = req.body?.call?.phone || "Unknown";
-  const comment = req.body?.call_result?.comment || "No comment";
+  const manager = req.body?.call?.user?.name || "Оператор";
+  const phone = req.body?.call?.phone || "Не указан";
+  const comment = req.body?.call_result?.comment || "Нет комментария";
   const startedAt = req.body?.call?.started_at;
-  const formattedDate = new Date(startedAt || Date.now()).toLocaleString("ru-RU");
+  const formattedDate = new Date(startedAt || Date.now()).toLocaleDateString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit", 
+    year: "numeric"
+  });
 
   const message = `
-✅ ПОТЕНЦИАЛЬНЫЙ КЛИЕНТ
+✅ ПОТЕНЦИАЛЬНЫЙ КЛИЕНТ 
 
 👤 Менеджер: ${manager}
 📞 Телефон: ${phone}
@@ -379,14 +383,13 @@ ID звонка: ${callId}`;
   if (!audioSent) {
     await axios.post(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
       chat_id: targetChatId,
-      text: message + "\n\n❌ Recording not available.",
+      text: message + "\n\n❌ Запись недоступна",
       parse_mode: "HTML",
     });
   }
 
   res.sendStatus(200);
 });
-
 /* ================= Express ================= */
 app.get("/", (req, res) => res.send("CallSuccess AI Processor running"));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
