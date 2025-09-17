@@ -122,6 +122,7 @@
     "statuses": "^2.0.2",
     "supports-color": "^5.5.0",
     "telegraf": "^4.16.3",
+    "telegraf-session-local": "^2.1.1",
     "telegraph": "^0.8.22",
     "timespan": "^2.3.0",
     "to-regex-range": "^5.0.1",

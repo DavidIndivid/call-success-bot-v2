@@ -3,7 +3,7 @@ const express = require("express");
 const axios = require("axios");
 const FormData = require("form-data");
 const { Telegraf, Markup } = require("telegraf");
-const { session } = require("@telegraf/session");
+const LocalSession = require("telegraf-session-local");
 const db = require("./database.js");
 
 const app = express();
@@ -21,7 +21,7 @@ const SUCCESSFUL_RESULT_NAMES = process.env.SUCCESSFUL_RESULT_NAMES
 app.use(express.json());
 
 const bot = new Telegraf(TG_BOT_TOKEN);
-bot.use(session()); // for interactive flows
+bot.use(new LocalSession({ database: "sessions.json" }).middleware());
 
 const processedCallIds = new Set();
 let availableScenarios = [];
