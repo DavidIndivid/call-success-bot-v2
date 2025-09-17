@@ -1,9 +1,9 @@
-// app.js
 require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const FormData = require("form-data");
-const { Telegraf, Markup, session } = require("telegraf");
+const { Telegraf, Markup } = require("telegraf");
+const { session } = require("@telegraf/session");
 const db = require("./database.js");
 
 const app = express();

@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "app.js",
   "dependencies": {
+    "@telegraf/session": "^2.0.0-beta.7",
     "accepts": "^2.0.0",
     "anymatch": "^3.1.3",
     "async": "^3.2.6",
