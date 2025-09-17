@@ -518,7 +518,7 @@ app.post("/webhook", async (req, res) => {
 ID звонка: ${callId}`;
 
     // wait 2 minutes to allow recording to appear
-    await new Promise((r) => setTimeout(r, 120000));
+    await new Promise((r) => setTimeout(r, 180000));
 
     const sent = await sendAudioToTelegram(callId, message, targetChatId);
     logCall(
