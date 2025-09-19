@@ -490,7 +490,9 @@ app.post("/webhook", async (req, res) => {
 
     const isSuccessful =
       resultName &&
-      SUCCESSFUL_RESULT_NAMES.some((n) => resultName.toLowerCase().includes(n.toLowerCase()));
+      SUCCESSFUL_RESULT_NAMES.some((n) =>
+        resultName.toLowerCase().includes(n.toLowerCase())
+      );
     if (!isSuccessful) return res.sendStatus(200);
 
     const targetChatId = await getChatIdForScenario(scenarioId);
@@ -504,10 +506,14 @@ app.post("/webhook", async (req, res) => {
     const comment = req.body?.call_result?.comment || "нет комментария";
     const startedAt = call.started_at || null;
     const dt = startedAt ? new Date(startedAt) : new Date();
-    const formattedDate = dt.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
+    const formattedDate = dt.toLocaleDateString("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric"
+    });
 
     const message = `
-    ✅ ПОТЕНЦИАЛЬНЫЙ КЛИЕНТ 
+✅ ПОТЕНЦИАЛЬНЫЙ КЛИЕНТ 
 
 👤 Менеджер: ${managerName}
 📞 Телефон: ${phone}
@@ -517,10 +523,34 @@ app.post("/webhook", async (req, res) => {
 Дата: ${formattedDate}
 ID звонка: ${callId}`;
 
-    // wait 2 minutes to allow recording to appear
-    await new Promise((r) => setTimeout(r, 180000));
+    console.log(`📞 New successful call ${callId}`);
 
-    const sent = await sendAudioToTelegram(callId, message, targetChatId);
+    await new Promise((r) => setTimeout(r, 600000));
+
+    let sent = await sendAudioToTelegram(callId, message, targetChatId);
+
+    if (!sent) {
+      await bot.telegram.sendMessage(
+        targetChatId,
+        message +
+          "\n\n⌛ Запись обрабатывается. Когда будет готова — придёт повторное сообщение с записью.",
+        { parse_mode: "HTML" }
+      );
+
+      let retries = 20; 
+      let delivered = false;
+
+      while (retries-- > 0 && !delivered) {
+        await new Promise((r) => setTimeout(r, 30000));
+        delivered = await sendAudioToTelegram(callId, message, targetChatId);
+        if (delivered) {
+          console.log(`🎧 Recording delivered later for call ${callId}`);
+        }
+      }
+    } else {
+      console.log(`🎧 Recording delivered on time for call ${callId}`);
+    }
+
     logCall(
       {
         callId,
@@ -529,18 +559,14 @@ ID звонка: ${callId}`;
         managerName,
         phone,
         comment,
-        startedAt,
+        startedAt
       },
       targetChatId
     );
 
-    if (!sent) {
-      await bot.telegram.sendMessage(targetChatId, message + "\n\n❌ Запись недоступна.", { parse_mode: "HTML" });
-    }
-
     return res.sendStatus(200);
   } catch (e) {
-    console.error("webhook handler error:", e);
+    console.error("webhook handler error:", e.message);
     return res.sendStatus(500);
   }
 });
